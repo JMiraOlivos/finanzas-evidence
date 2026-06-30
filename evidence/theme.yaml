@@ -1,0 +1,70 @@
+# Theme Configuration
+# Docs: https://docs.evidence.studio/features/themes
+
+colors:
+  base:
+    light: '#ffffff'
+    dark: '#303030'
+  card:
+    light: '#ffffff'
+    dark: '#303030'
+  cardLayoutBackground:
+    light: '#ffffff'
+    dark: '#303030'
+  positive:
+    light: '#303030'
+    dark: '#f8f5f0'
+  negative:
+    light: '#e60000'
+    dark: '#e60000'
+
+colorPalettes:
+  default:
+    light: ['#303030', '#666666', '#b3b3b3', '#e2d9d0', '#e60000']
+    dark: ['#f8f5f0', '#cccccc', '#b3b3b3', '#e2d9d0', '#e60000']
+
+colorScales:
+  default:
+    light: ['#f8f5f0', '#e60000']
+    dark: ['#303030', '#e60000']
+
+fonts:
+  heading: serif
+  body: sans-serif
+  mono: mono
+
+radius: 0px
+depth: flat
+density: comfortable
+
+table:
+  rowLines: true
+  rowShading: false
+  subtotalBackground:
+    light: '#f8f5f0'
+    dark: '#404040'
+  totalBackground:
+    light: '#f8f5f0'
+    dark: '#404040'
+  rowBorderColor:
+    light: '#e2d9d0'
+    dark: '#666666'
+  hoverColor:
+    light: '#f8f5f0'
+    dark: '#404040'
+  linkColor:
+    light: '#303030'
+    dark: '#f8f5f0'
+
+chart:
+  gridlines: true
+  baselines: true
+  gridlineColor:
+    light: '#e2d9d0'
+    dark: '#666666'
+  axisLabelColor:
+    light: '#666666'
+    dark: '#cccccc'
+  baselineColor:
+    light: '#303030'
+    dark: '#f8f5f0'

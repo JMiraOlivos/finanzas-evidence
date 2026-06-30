@@ -51,6 +51,11 @@ base as (
         coalesce(is_fallback, true) as is_fallback
     from candidatos
     where rn = 1
+),
+
+periodo_actual as (
+    select max(periodo) as periodo
+    from base
 )
 
 select
@@ -65,5 +70,6 @@ select
         else null
     end) as cuentas_revision
 from base
+inner join periodo_actual using (periodo)
 group by empresa, oficina, periodo
 order by empresa, periodo
