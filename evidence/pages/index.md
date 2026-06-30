@@ -2,30 +2,6 @@
 title: EERR Finanzas
 ---
 
-```sql cargas
-select * from {{queries/cargas}}
-```
-
-```sql pnl_resumen_kpis
-select * from {{queries/pnl/pnl_resumen_kpis}}
-```
-
-```sql resultado_mensual
-select * from {{queries/pnl/resultado_mensual}}
-```
-
-```sql pnl_nivel1
-select * from {{queries/pnl/pnl_nivel1}}
-```
-
-```sql pnl_estructurado
-select * from {{queries/pnl/pnl_estructurado}}
-```
-
-```sql cuentas_revision
-select * from {{queries/pnl/cuentas_revision}}
-```
-
 # EERR Finanzas
 
 Engel & Völkers Finanzas. Reporte financiero mensual conectado a Neon Postgres, con lectura ejecutiva de ingresos, gastos, resultado y cuentas pendientes de clasificacion.
@@ -40,28 +16,28 @@ Indicadores principales del ultimo periodo disponible.
 
 {% row %}
     {% big_value
-        data="pnl_resumen_kpis"
+        data="queries/pnl/pnl_resumen_kpis"
         value="sum(ingresos_ml)"
         title="Ingresos"
         fmt="$ #,##0;($ #,##0)"
         text_size="3xl"
     /%}
     {% big_value
-        data="pnl_resumen_kpis"
+        data="queries/pnl/pnl_resumen_kpis"
         value="sum(gastos_ml)"
         title="Gastos"
         fmt="$ #,##0;($ #,##0)"
         text_size="3xl"
     /%}
     {% big_value
-        data="pnl_resumen_kpis"
+        data="queries/pnl/pnl_resumen_kpis"
         value="sum(resultado_ml)"
         title="Resultado"
         fmt="$ #,##0;($ #,##0)"
         text_size="3xl"
     /%}
     {% big_value
-        data="pnl_resumen_kpis"
+        data="queries/pnl/pnl_resumen_kpis"
         value="sum(cuentas_revision)"
         title="Cuentas por revisar"
         fmt="num0"
@@ -74,7 +50,7 @@ Indicadores principales del ultimo periodo disponible.
 Control operativo de las cargas mas recientes del libro diario.
 
 {% table
-    data="cargas"
+    data="queries/cargas"
     limit=5
     row_lines=true
     row_shading=false
@@ -95,7 +71,7 @@ Control operativo de las cargas mas recientes del libro diario.
 Evolucion de ingresos, gastos y resultado por empresa y periodo.
 
 {% table
-    data="resultado_mensual"
+    data="queries/pnl/resultado_mensual"
     row_lines=true
     row_shading=false
     repeat_values=true
@@ -112,7 +88,7 @@ Evolucion de ingresos, gastos y resultado por empresa y periodo.
 Vista agregada por primera jerarquia financiera para identificar rapidamente la composicion del resultado.
 
 {% table
-    data="pnl_nivel1"
+    data="queries/pnl/pnl_nivel1"
     row_lines=true
     row_shading=false
     repeat_values=true
@@ -132,7 +108,7 @@ Vista agregada por primera jerarquia financiera para identificar rapidamente la 
 Estado de resultados con niveles financieros, subtotales y alertas discretas para partidas que requieren revision.
 
 {% table
-    data="pnl_estructurado"
+    data="queries/pnl/pnl_estructurado"
     row_lines=true
     row_shading=false
     repeat_values=false
@@ -157,7 +133,7 @@ Estado de resultados con niveles financieros, subtotales y alertas discretas par
 Cuentas procesadas por fallback o sin regla exacta. El objetivo es depurarlas en `etl/config/pnl_mapping_rules.json`.
 
 {% table
-    data="cuentas_revision"
+    data="queries/pnl/cuentas_revision"
     row_lines=true
     row_shading=false
     repeat_values=true
