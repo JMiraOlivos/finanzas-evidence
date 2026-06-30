@@ -80,7 +80,23 @@ select
     nivel3,
     sum(saldo_ml) as monto_ml,
     count(*) as movimientos,
-    bool_or(is_fallback) as contiene_fallback
+    bool_or(is_fallback) as contiene_fallback,
+    case
+        when nivel1 in ('Resultado Final', 'EBITDA', 'Resultado')
+          or nivel2 in ('Resultado Final', 'EBITDA', 'Resultado')
+          or nivel1 in ('P&L sin clasificar', 'SIN MAPEO')
+          or nivel2 in ('P&L sin clasificar', 'SIN MAPEO')
+        then true
+        else false
+    end as es_subtotal,
+    case
+        when bool_or(is_fallback) = true
+          or nivel1 in ('P&L sin clasificar', 'SIN MAPEO')
+          or nivel2 in ('P&L sin clasificar', 'SIN MAPEO')
+          or nivel3 in ('P&L sin clasificar', 'SIN MAPEO')
+        then true
+        else false
+    end as requiere_revision
 from base
 group by empresa, periodo, orden, nivel1, nivel2, nivel3
 order by empresa, periodo, orden, nivel1, nivel2, nivel3

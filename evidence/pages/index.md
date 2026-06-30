@@ -1,216 +1,257 @@
 ---
 title: EERR Finanzas
+queries:
+  - cargas: cargas.sql
+  - pnl_resumen_kpis: pnl/pnl_resumen_kpis.sql
+  - resultado_mensual: pnl/resultado_mensual.sql
+  - pnl_nivel1: pnl/pnl_nivel1.sql
+  - pnl_estructurado: pnl/pnl_estructurado.sql
+  - cuentas_revision: pnl/cuentas_revision.sql
 ---
 
-# EERR Finanzas
+<script>
+  import EVTheme from '../components/EVTheme.svelte';
+  import EVSectionTitle from '../components/EVSectionTitle.svelte';
+  import EVKpiCard from '../components/EVKpiCard.svelte';
+  import EVFinancialTable from '../components/EVFinancialTable.svelte';
+  import Money from '../components/Money.svelte';
 
-Primera versión de reportería financiera con Neon Postgres + Evidence.
+  const rowsOf = (input) => {
+    if (Array.isArray(input)) return input;
+    if (Array.isArray(input?.rows)) return input.rows;
+    if (Array.isArray(input?.data)) return input.data;
+    return [];
+  };
 
-## Últimas cargas
+  $: kpiRows = rowsOf(pnl_resumen_kpis);
+  $: kpi = kpiRows[kpiRows.length - 1] ?? {};
+  $: cargaRows = rowsOf(cargas);
+  $: ultimaCarga = cargaRows[0] ?? {};
+  $: resultadoRows = rowsOf(resultado_mensual);
+</script>
 
-```sql cargas
-select
-    id,
-    empresa_id,
-    archivo_nombre,
-    filas_leidas,
-    filas_insertadas,
-    fecha_min,
-    fecha_max,
-    total_debe_ml,
-    total_haber_ml,
-    (total_debe_ml - total_haber_ml) as saldo_ml,
-    creado_en
-from postgres_finanzas_cargas_libro_diario
-order by id desc
-```
+<EVTheme>
+  <header class="hero">
+    <div class="eyebrow">Engel & Völkers Finanzas</div>
+    <h1>EERR Finanzas</h1>
+    <p>
+      Reporte financiero mensual conectado a Neon Postgres, con lectura ejecutiva de ingresos,
+      gastos, resultado y cuentas pendientes de clasificacion.
+    </p>
+  </header>
 
-{% table data="cargas" /%}
+  <EVSectionTitle
+    title="Resumen ejecutivo"
+    subtitle="Indicadores principales del ultimo periodo disponible. Los montos permanecen numericos en las queries y se formatean como CLP solo en la capa visual."
+  />
 
-## Resultado mensual
+  <section class="kpi-grid">
+    <EVKpiCard title="Ingresos" value={kpi.ingresos_ml} subtitle={kpi.periodo ? `Periodo ${kpi.periodo}` : 'Ultimo periodo disponible'} />
+    <EVKpiCard title="Gastos" value={kpi.gastos_ml} subtitle={kpi.empresa ? `Empresa ${kpi.empresa}` : 'Consolidado por empresa'} />
+    <EVKpiCard title="Resultado" value={kpi.resultado_ml} subtitle="Ingresos menos gastos P&L" variant="result" />
+    <EVKpiCard title="Cuentas por revisar" value={kpi.cuentas_revision} subtitle="Fallback o sin clasificacion exacta" format="number" variant="warning" />
+  </section>
 
-```sql resultado_mensual
-with movimientos_pnl as (
-    select f.id, f.empresa, f.periodo, f.cuenta_codigo, f.saldo_ml
-    from postgres_finanzas_fact_libro_diario f
-    where substring(f.cuenta_codigo, 1, 1) in ('4','5','6')
-),
-candidatos as (
-    select m.*, r.orden, r.nivel1,
-        row_number() over (
-            partition by m.id
-            order by coalesce(r.priority,-999999) desc,
-                length(coalesce(r.pattern,'')) desc,
-                coalesce(r.orden,9999) asc,
-                coalesce(r.id,999999999) asc
-        ) as rn
-    from movimientos_pnl m
-    cross join postgres_finanzas_dim_pnl_mapping_rule r
-    where r.activa = true
-      and (
-           (r.rule_type='exact' and r.pattern = m.cuenta_codigo)
-        or (r.rule_type='prefix' and substring(m.cuenta_codigo,1,length(r.pattern)) = r.pattern)
-        or (r.rule_type='default')
-      )
-),
-base as (
-    select empresa, periodo, saldo_ml, coalesce(nivel1,'SIN MAPEO') as nivel1
-    from candidatos where rn = 1
-)
-select empresa, periodo,
-    sum(case when nivel1='Ingresos' then saldo_ml else 0 end) as ingresos_ml,
-    sum(case when nivel1!='Ingresos' then saldo_ml else 0 end) as gastos_ml,
-    sum(saldo_ml) as resultado_ml
-from base group by empresa, periodo order by empresa, periodo
-```
+  <section class="load-note">
+    <div>
+      <span class="note-label">Ultima carga</span>
+      <strong>{ultimaCarga.archivo_nombre ?? 'Sin cargas registradas'}</strong>
+    </div>
+    <div>
+      <span class="note-label">Rango</span>
+      <strong>{ultimaCarga.fecha_min ?? '-'} / {ultimaCarga.fecha_max ?? '-'}</strong>
+    </div>
+    <div>
+      <span class="note-label">Saldo carga</span>
+      <strong><Money value={ultimaCarga.saldo_ml} /></strong>
+    </div>
+  </section>
 
-{% table data="resultado_mensual" /%}
+  <EVSectionTitle
+    title="Resultado mensual"
+    subtitle="Evolucion de ingresos, gastos y resultado por empresa y periodo."
+  />
 
-## PNL por Nivel 1
+  <div class="monthly-table">
+    {#if resultadoRows.length}
+      <table>
+        <thead>
+          <tr>
+            <th>Empresa</th>
+            <th>Periodo</th>
+            <th class="amount">Ingresos</th>
+            <th class="amount">Gastos</th>
+            <th class="amount">Resultado</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each resultadoRows as row}
+            <tr>
+              <td>{row.empresa}</td>
+              <td>{row.periodo}</td>
+              <td class="amount"><Money value={row.ingresos_ml} /></td>
+              <td class="amount"><Money value={row.gastos_ml} /></td>
+              <td class="amount result"><Money value={row.resultado_ml} /></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {:else}
+      <div class="empty-state">Sin resultado mensual para mostrar.</div>
+    {/if}
+  </div>
 
-```sql pnl_nivel1
-with movimientos_pnl as (
-    select f.id, f.empresa, f.periodo, f.cuenta_codigo, f.saldo_ml
-    from postgres_finanzas_fact_libro_diario f
-    where substring(f.cuenta_codigo, 1, 1) in ('4','5','6')
-),
-candidatos as (
-    select m.*, r.orden, r.nivel1,
-        row_number() over (
-            partition by m.id
-            order by coalesce(r.priority,-999999) desc,
-                length(coalesce(r.pattern,'')) desc,
-                coalesce(r.orden,9999) asc,
-                coalesce(r.id,999999999) asc
-        ) as rn
-    from movimientos_pnl m
-    cross join postgres_finanzas_dim_pnl_mapping_rule r
-    where r.activa = true
-      and (
-           (r.rule_type='exact' and r.pattern = m.cuenta_codigo)
-        or (r.rule_type='prefix' and substring(m.cuenta_codigo,1,length(r.pattern)) = r.pattern)
-        or (r.rule_type='default')
-      )
-),
-base as (
-    select empresa, periodo, saldo_ml,
-        coalesce(orden,9999) as orden,
-        coalesce(nivel1,'SIN MAPEO') as nivel1
-    from candidatos where rn = 1
-)
-select empresa, periodo, orden, nivel1,
-    sum(saldo_ml) as monto_ml,
-    count(*) as movimientos
-from base group by empresa, periodo, orden, nivel1
-order by empresa, periodo, orden, nivel1
-```
+  <EVSectionTitle
+    title="PNL por nivel 1"
+    subtitle="Vista agregada por primera jerarquia financiera para identificar rapidamente composicion del resultado."
+  />
 
-{% table data="pnl_nivel1" /%}
+  <EVFinancialTable
+    data={pnl_nivel1}
+    levelColumns={['empresa', 'periodo', 'nivel1']}
+    metaColumns={['movimientos']}
+    amountColumn="monto_ml"
+  />
 
-## PNL estructurado
+  <EVSectionTitle
+    title="PNL estructurado"
+    subtitle="Estado de resultados con niveles financieros, subtotales y alertas discretas para partidas que requieren revision."
+  />
 
-```sql pnl_estructurado
-with movimientos_pnl as (
-    select f.id, f.empresa, f.periodo, f.cuenta_codigo, f.saldo_ml
-    from postgres_finanzas_fact_libro_diario f
-    where substring(f.cuenta_codigo, 1, 1) in ('4','5','6')
-),
-candidatos as (
-    select m.*, r.orden, r.nivel1, r.nivel2, r.nivel3, r.is_fallback,
-        row_number() over (
-            partition by m.id
-            order by coalesce(r.priority,-999999) desc,
-                length(coalesce(r.pattern,'')) desc,
-                coalesce(r.orden,9999) asc,
-                coalesce(r.id,999999999) asc
-        ) as rn
-    from movimientos_pnl m
-    cross join postgres_finanzas_dim_pnl_mapping_rule r
-    where r.activa = true
-      and (
-           (r.rule_type='exact' and r.pattern = m.cuenta_codigo)
-        or (r.rule_type='prefix' and substring(m.cuenta_codigo,1,length(r.pattern)) = r.pattern)
-        or (r.rule_type='default')
-      )
-),
-base as (
-    select empresa, periodo, saldo_ml,
-        coalesce(orden,9999) as orden,
-        coalesce(nivel1,'SIN MAPEO') as nivel1,
-        coalesce(nivel2,'SIN MAPEO') as nivel2,
-        coalesce(nivel3,'SIN MAPEO') as nivel3,
-        coalesce(is_fallback,true) as is_fallback
-    from candidatos where rn = 1
-)
-select empresa, periodo, orden, nivel1, nivel2, nivel3,
-    sum(saldo_ml) as monto_ml,
-    count(*) as movimientos,
-    max(is_fallback) as contiene_fallback
-from base group by empresa, periodo, orden, nivel1, nivel2, nivel3
-order by empresa, periodo, orden, nivel1, nivel2, nivel3
-```
+  <EVFinancialTable
+    data={pnl_estructurado}
+    levelColumns={['nivel1', 'nivel2', 'nivel3']}
+    metaColumns={['empresa', 'periodo', 'movimientos']}
+    amountColumn="monto_ml"
+  />
 
-{% table data="pnl_estructurado" /%}
+  <EVSectionTitle
+    title="Cuentas por revisar"
+    subtitle="Cuentas procesadas por fallback o sin regla exacta. El objetivo es depurarlas en etl/config/pnl_mapping_rules.json."
+  />
 
-## Cuentas por revisar
+  <EVFinancialTable
+    data={cuentas_revision}
+    levelColumns={['cuenta_codigo', 'cuenta_nombre', 'nivel1']}
+    metaColumns={['empresa', 'regla_aplicada', 'tipo_regla', 'movimientos']}
+    amountColumn="monto_ml"
+  />
+</EVTheme>
 
-Estas cuentas están siendo procesadas por fallback o quedaron sin clasificación específica. La idea es ir agregando reglas exactas en `etl/config/pnl_mapping_rules.json`.
+<style>
+  .hero {
+    border-bottom: 1px solid var(--ev-border, #e2d9d0);
+    margin-bottom: 16px;
+    padding-bottom: 42px;
+  }
 
-```sql cuentas_revision
-with movimientos_pnl as (
-    select f.id, f.empresa, f.periodo, f.cuenta_codigo, f.cuenta_nombre, f.saldo_ml
-    from postgres_finanzas_fact_libro_diario f
-    where substring(f.cuenta_codigo, 1, 1) in ('4','5','6')
-),
-candidatos as (
-    select m.*, r.rule_key, r.rule_type, r.nivel1, r.nivel2, r.nivel3, r.is_fallback,
-        row_number() over (
-            partition by m.id
-            order by coalesce(r.priority,-999999) desc,
-                length(coalesce(r.pattern,'')) desc,
-                coalesce(r.orden,9999) asc,
-                coalesce(r.id,999999999) asc
-        ) as rn
-    from movimientos_pnl m
-    cross join postgres_finanzas_dim_pnl_mapping_rule r
-    where r.activa = true
-      and (
-           (r.rule_type='exact' and r.pattern = m.cuenta_codigo)
-        or (r.rule_type='prefix' and substring(m.cuenta_codigo,1,length(r.pattern)) = r.pattern)
-        or (r.rule_type='default')
-      )
-),
-base as (
-    select empresa, cuenta_codigo, cuenta_nombre, saldo_ml,
-        coalesce(rule_key,'sin_regla') as rule_key,
-        coalesce(rule_type,'none') as rule_type,
-        coalesce(nivel1,'SIN MAPEO') as nivel1,
-        coalesce(nivel2,'SIN MAPEO') as nivel2,
-        coalesce(nivel3,'SIN MAPEO') as nivel3,
-        coalesce(is_fallback,true) as is_fallback
-    from candidatos where rn = 1
-),
-agg as (
-    select empresa, cuenta_codigo,
-        any(cuenta_nombre) as cuenta_nombre,
-        any(rule_key) as regla_aplicada,
-        any(rule_type) as tipo_regla,
-        any(nivel1) as nivel1_agg,
-        any(nivel2) as nivel2_agg,
-        any(nivel3) as nivel3_agg,
-        sum(saldo_ml) as monto_ml,
-        count(*) as movimientos,
-        max(is_fallback) as tiene_fallback,
-        countIf(nivel1 in ('SIN MAPEO', 'P&L sin clasificar')) as sin_clasificar
-    from base
-    group by empresa, cuenta_codigo
-)
-select empresa, cuenta_codigo, cuenta_nombre, regla_aplicada, tipo_regla,
-    nivel1_agg as nivel1, nivel2_agg as nivel2, nivel3_agg as nivel3,
-    monto_ml, movimientos
-from agg
-where tiene_fallback = true or sin_clasificar > 0
-order by abs(monto_ml) desc
-```
+  .eyebrow {
+    color: var(--ev-red, #e60000);
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    margin-bottom: 18px;
+    text-transform: uppercase;
+  }
 
-{% table data="cuentas_revision" /%}
+  h1 {
+    color: var(--ev-text, #303030);
+    font-family: var(--ev-font-head, Georgia, "Times New Roman", serif);
+    font-size: clamp(2.8rem, 7vw, 5.6rem);
+    font-weight: 400;
+    letter-spacing: -0.055em;
+    line-height: 0.98;
+    margin: 0;
+  }
+
+  .hero p {
+    color: var(--ev-text-muted, #666666);
+    font-size: 1.05rem;
+    line-height: 1.6;
+    margin: 22px 0 0;
+    max-width: 760px;
+  }
+
+  .kpi-grid {
+    display: grid;
+    gap: 18px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .load-note {
+    background: var(--ev-surface, #f8f5f0);
+    border: 1px solid var(--ev-border, #e2d9d0);
+    display: grid;
+    gap: 18px;
+    grid-template-columns: 2fr 1fr 1fr;
+    margin-top: 18px;
+    padding: 20px 24px;
+  }
+
+  .note-label {
+    color: var(--ev-text-muted, #666666);
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+  }
+
+  .load-note strong {
+    color: var(--ev-text, #303030);
+    font-weight: 700;
+  }
+
+  .monthly-table {
+    border: 1px solid var(--ev-border, #e2d9d0);
+    overflow-x: auto;
+  }
+
+  .monthly-table table {
+    background: var(--ev-white, #ffffff);
+    border-collapse: collapse;
+    min-width: 720px;
+    width: 100%;
+  }
+
+  .monthly-table th,
+  .monthly-table td {
+    border-bottom: 1px solid var(--ev-border, #e2d9d0);
+    padding: 14px 16px;
+    text-align: left;
+  }
+
+  .monthly-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .monthly-table .amount {
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .monthly-table .result {
+    font-weight: 700;
+  }
+
+  .empty-state {
+    background: var(--ev-surface, #f8f5f0);
+    color: var(--ev-text-muted, #666666);
+    padding: 22px;
+  }
+
+  @media (max-width: 920px) {
+    .kpi-grid,
+    .load-note {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 620px) {
+    .kpi-grid,
+    .load-note {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

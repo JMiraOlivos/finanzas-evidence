@@ -3,19 +3,19 @@
 """
 Carga libros diarios E&V a Neon/Postgres.
 
-Uso recomendado para partir desde cero:
+Uso:
   python load_libro_diario.py diarioext.xls --replace --reset-schema
-
-Uso normal:
-  python load_libro_diario.py diarioext.xls --replace
   python load_libro_diario.py diarioext.xls --empresa "E&V Calera de Tango" --replace
 
-Notas:
-- Si no se entrega --empresa, el script pregunta que oficina/empresa se esta cargando.
-- Para este MVP, empresa y oficina se guardan iguales por defecto.
-- Si quieres distinguirlas, puedes pasar --oficina.
-- saldo_ml = haber_ml - debe_ml.
-- Cuentas que comienzan con 4, 5 o 6 se clasifican como EERR; el resto como BALANCE.
+Para archivos sin headers:
+- El script detecta automáticamente columna de fecha, cuenta contable, debe y haber.
+- También acepta override manual con columnas 1-based:
+  python load_libro_diario.py diarioext.xls --cuenta-col 5 --debe-col 7 --haber-col 8
+
+Reglas:
+- saldo_ml = haber_ml - debe_ml
+- cuentas que comienzan con 4, 5 o 6 => EERR
+- resto => BALANCE
 """
 
 from __future__ import annotations
@@ -46,26 +46,10 @@ EMPRESAS = [
     "E&V Vitacura",
 ]
 
-EXPECTED_NO_HEADER = [
-    "fecha",
-    "tipo_comprobante",
-    "numero_comprobante",
-    "secuencia",
-    "glosa",
-    "cuenta_contable",
-    "cuenta_nombre",
-    "ignorar",
-    "debe_ml",
-    "haber_ml",
-]
-
 COLUMN_ALIASES = {
     "fecha": ["fecha", "fec", "date"],
     "tipo_comprobante": ["tipo", "tipo comp.", "tipo comp", "tipo comprobante", "tipo_comprobante"],
-    "numero_comprobante": [
-        "nº comp.", "n° comp.", "nro comp.", "num comp.", "numero comprobante",
-        "número comprobante", "numero_comprobante", "n comp",
-    ],
+    "numero_comprobante": ["nº comp.", "n° comp.", "nro comp.", "num comp.", "numero comprobante", "número comprobante", "numero_comprobante", "n comp"],
     "secuencia": ["sec", "secuencia"],
     "glosa": ["glosa", "detalle", "descripcion", "descripción"],
     "cuenta_contable": ["cuenta", "cuenta contable", "cuenta_contable", "codigo cuenta", "código cuenta"],
@@ -77,7 +61,7 @@ COLUMN_ALIASES = {
 
 def sanitize_schema(schema: str) -> str:
     if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", schema):
-        raise ValueError(f"Schema invalido: {schema}")
+        raise ValueError(f"Schema inválido: {schema}")
     return schema
 
 
@@ -109,6 +93,7 @@ def looks_like_header(first_row: pd.Series) -> bool:
 def normalize_number(value: Any) -> float:
     if pd.isna(value) or value == "":
         return 0.0
+
     if isinstance(value, (int, float)):
         return float(value)
 
@@ -118,7 +103,13 @@ def normalize_number(value: Any) -> float:
 
     text = text.replace("$", "").replace("CLP", "").replace(" ", "")
 
-    # Formato chileno con decimales: 1.234.567,89
+    # Manejo de números negativos entre paréntesis.
+    neg = False
+    if text.startswith("(") and text.endswith(")"):
+        neg = True
+        text = text[1:-1]
+
+    # Formato chileno: 1.234.567,89
     if "," in text and "." in text:
         text = text.replace(".", "").replace(",", ".")
     # Formato chileno entero: 1.234.567
@@ -128,7 +119,8 @@ def normalize_number(value: Any) -> float:
         text = text.replace(",", ".")
 
     try:
-        return float(text)
+        num = float(text)
+        return -num if neg else num
     except ValueError:
         return 0.0
 
@@ -147,17 +139,19 @@ def extract_account_name(cuenta_contable: Any, cuenta_nombre: Any) -> str:
         text = str(cuenta_nombre).strip()
         if text:
             return text
+
     if cuenta_contable is None or pd.isna(cuenta_contable):
         return ""
+
     text = str(cuenta_contable).strip()
     parts = re.split(r"\s+-\s+", text, maxsplit=1)
     if len(parts) == 2:
         return parts[1].strip()
+
     return text
 
 
 def get_col(df: pd.DataFrame, col: str, default: Any = "") -> pd.Series:
-    """Devuelve una columna como Series aunque el DataFrame tenga columnas duplicadas."""
     if col not in df.columns:
         return pd.Series([default] * len(df), index=df.index)
     value = df[col]
@@ -170,6 +164,7 @@ def choose_empresa() -> str:
     print("\n¿Qué empresa/oficina estás cargando?")
     for i, emp in enumerate(EMPRESAS, 1):
         print(f"{i}. {emp}")
+
     while True:
         raw = input("Selecciona número: ").strip()
         try:
@@ -181,13 +176,203 @@ def choose_empresa() -> str:
         print("Opción inválida. Intenta nuevamente.")
 
 
-def read_excel_any(path: Path) -> tuple[pd.DataFrame, bool]:
+def score_date_series(s: pd.Series) -> float:
+    parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    return float(parsed.notna().mean())
+
+
+def score_account_series(s: pd.Series) -> float:
+    codes = s.apply(extract_account_code)
+    if len(codes) == 0:
+        return 0.0
+
+    # En el plan de cuentas actual, las cuentas suelen ser 6 dígitos.
+    valid_len = codes.str.len().between(5, 8)
+    valid_prefix = codes.str[0].isin(list("123456"))
+    valid = valid_len & valid_prefix
+
+    non_zero_numeric = codes.ne("")
+    unique_ratio = codes[valid].nunique() / max(1, valid.sum())
+
+    prefix_bonus = 0.0
+    prefixes = set(codes[valid].str[0].dropna().tolist())
+    if prefixes.intersection({"4", "5", "6"}):
+        prefix_bonus += 0.20
+    if prefixes.intersection({"1", "2", "3"}):
+        prefix_bonus += 0.10
+    if len(prefixes) >= 3:
+        prefix_bonus += 0.10
+
+    return float(valid.mean()) + prefix_bonus + min(unique_ratio, 1.0) * 0.10 + float(non_zero_numeric.mean()) * 0.05
+
+
+def numeric_profile(s: pd.Series) -> tuple[pd.Series, float, float, float]:
+    nums = s.apply(normalize_number)
+    non_zero_ratio = float(nums.ne(0).mean()) if len(nums) else 0.0
+    abs_sum = float(nums.abs().sum())
+    max_abs = float(nums.abs().max()) if len(nums) else 0.0
+
+    unique_abs = set(abs(float(x)) for x in nums.dropna().unique()[:20])
+    binary_penalty = 0.50 if unique_abs and unique_abs.issubset({0.0, 1.0}) else 0.0
+    large_bonus = 0.20 if max_abs > 1000 else 0.0
+    score = non_zero_ratio + large_bonus - binary_penalty
+
+    return nums, score, abs_sum, max_abs
+
+
+def infer_no_header_columns(
+    raw: pd.DataFrame,
+    cuenta_col_override: int | None = None,
+    debe_col_override: int | None = None,
+    haber_col_override: int | None = None,
+) -> list[str]:
+    """
+    Infere columnas en archivos sin headers.
+
+    La clave es NO asumir posición fija de la cuenta contable.
+    Se detecta:
+    - Fecha: columna con mayor tasa de fechas.
+    - Cuenta: columna con mayor tasa de códigos contables.
+    - Debe/Haber: mejor par de columnas numéricas cuyo total queda más balanceado.
+    """
+    ncols = raw.shape[1]
+    mapping: dict[int, str] = {}
+
+    # Overrides manuales 1-based.
+    if cuenta_col_override:
+        mapping[cuenta_col_override - 1] = "cuenta_contable"
+    if debe_col_override:
+        mapping[debe_col_override - 1] = "debe_ml"
+    if haber_col_override:
+        mapping[haber_col_override - 1] = "haber_ml"
+
+    for idx in mapping:
+        if idx < 0 or idx >= ncols:
+            raise ValueError(f"Columna override fuera de rango: {idx + 1}. El archivo tiene {ncols} columnas.")
+
+    # Fecha.
+    if "fecha" not in mapping.values():
+        date_scores = [(i, score_date_series(raw.iloc[:, i])) for i in range(ncols) if i not in mapping]
+        date_col, _ = max(date_scores, key=lambda x: x[1])
+        mapping[date_col] = "fecha"
+
+    # Cuenta contable.
+    if "cuenta_contable" not in mapping.values():
+        account_scores = [
+            (i, score_account_series(raw.iloc[:, i]))
+            for i in range(ncols)
+            if i not in mapping
+        ]
+        account_col, account_score = max(account_scores, key=lambda x: x[1])
+        if account_score < 0.45:
+            raise ValueError(
+                "No se pudo detectar de forma confiable la columna de cuenta contable. "
+                "Usa --cuenta-col con número de columna 1-based."
+            )
+        mapping[account_col] = "cuenta_contable"
+    else:
+        account_col = [i for i, name in mapping.items() if name == "cuenta_contable"][0]
+
+    # Debe/Haber.
+    if "debe_ml" not in mapping.values() or "haber_ml" not in mapping.values():
+        numeric_candidates = []
+        for i in range(ncols):
+            if i in mapping:
+                continue
+            nums, score, abs_sum, max_abs = numeric_profile(raw.iloc[:, i])
+            # Evitar columnas sin montos reales.
+            if score > 0.10 and abs_sum > 0:
+                numeric_candidates.append((i, nums, score, abs_sum, max_abs))
+
+        best_pair = None
+        best_score = None
+
+        for a_idx in range(len(numeric_candidates)):
+            for b_idx in range(a_idx + 1, len(numeric_candidates)):
+                i, nums_i, score_i, sum_i, _ = numeric_candidates[a_idx]
+                j, nums_j, score_j, sum_j, _ = numeric_candidates[b_idx]
+
+                total = sum_i + sum_j
+                if total <= 0:
+                    continue
+
+                balance_ratio = abs(sum_i - sum_j) / total
+
+                # Preferir columnas a la derecha de la cuenta y cercanas entre sí.
+                right_bonus = 0.0
+                if i > account_col and j > account_col:
+                    right_bonus -= 0.15
+
+                distance_penalty = abs(i - j) * 0.01
+
+                score = balance_ratio + distance_penalty + right_bonus - (score_i + score_j) * 0.01
+
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_pair = (i, j)
+
+        if not best_pair:
+            raise ValueError(
+                "No se pudieron detectar columnas Debe/Haber. "
+                "Usa --debe-col y --haber-col con números de columna 1-based."
+            )
+
+        amount_cols = sorted(best_pair)
+
+        if "debe_ml" not in mapping.values():
+            mapping[amount_cols[0]] = "debe_ml"
+        if "haber_ml" not in mapping.values():
+            mapping[amount_cols[1]] = "haber_ml"
+
+    # Completar columnas restantes con nombres útiles.
+    account_col = [i for i, name in mapping.items() if name == "cuenta_contable"][0]
+    amount_cols = sorted([i for i, name in mapping.items() if name in {"debe_ml", "haber_ml"}])
+
+    for i in range(ncols):
+        if i in mapping:
+            continue
+
+        if i == 1:
+            mapping[i] = "tipo_comprobante"
+        elif i == 2:
+            mapping[i] = "numero_comprobante"
+        elif i == 3:
+            mapping[i] = "secuencia"
+        elif i < account_col:
+            mapping[i] = "glosa" if "glosa" not in mapping.values() else f"extra_{i}"
+        elif account_col < i < amount_cols[0]:
+            mapping[i] = "cuenta_nombre" if "cuenta_nombre" not in mapping.values() else f"extra_{i}"
+        else:
+            mapping[i] = "ignorar" if "ignorar" not in mapping.values() else f"extra_{i}"
+
+    required = {"fecha", "cuenta_contable", "debe_ml", "haber_ml"}
+    missing = required - set(mapping.values())
+    if missing:
+        raise ValueError(f"No se pudieron inferir columnas mínimas: {missing}")
+
+    print("\nDetección automática de columnas sin headers")
+    print("-" * 80)
+    for i in range(ncols):
+        sample = raw.iloc[:3, i].tolist()
+        print(f"Col {i + 1}: {mapping[i]:22} sample={sample}")
+
+    return [mapping[i] for i in range(ncols)]
+
+
+def read_excel_any(
+    path: Path,
+    cuenta_col_override: int | None = None,
+    debe_col_override: int | None = None,
+    haber_col_override: int | None = None,
+) -> tuple[pd.DataFrame, bool]:
     raw = pd.read_excel(path, header=None, dtype=object)
     raw = raw.dropna(how="all")
+
     if raw.empty:
         raise ValueError("El archivo no tiene filas útiles.")
 
     has_header = looks_like_header(raw.iloc[0])
+
     if has_header:
         header = [normalize_col_name(x) for x in raw.iloc[0].tolist()]
         df = raw.iloc[1:].copy()
@@ -200,19 +385,37 @@ def read_excel_any(path: Path) -> tuple[pd.DataFrame, bool]:
                     if canonical not in rename.values():
                         rename[col] = canonical
                     break
+
         df = df.rename(columns=rename)
         df = df.loc[:, ~df.columns.duplicated()].copy()
+
     else:
         df = raw.copy()
-        cols = EXPECTED_NO_HEADER + [
-            f"extra_{i}" for i in range(max(0, df.shape[1] - len(EXPECTED_NO_HEADER)))
-        ]
-        df.columns = cols[: df.shape[1]]
+        cols = infer_no_header_columns(
+            raw,
+            cuenta_col_override=cuenta_col_override,
+            debe_col_override=debe_col_override,
+            haber_col_override=haber_col_override,
+        )
+        df.columns = cols
+
     return df, has_header
 
 
-def normalize_libro(path: Path, empresa: str, oficina: str) -> tuple[pd.DataFrame, bool, str]:
-    df, has_header = read_excel_any(path)
+def normalize_libro(
+    path: Path,
+    empresa: str,
+    oficina: str,
+    cuenta_col_override: int | None = None,
+    debe_col_override: int | None = None,
+    haber_col_override: int | None = None,
+) -> tuple[pd.DataFrame, bool, str]:
+    df, has_header = read_excel_any(
+        path,
+        cuenta_col_override=cuenta_col_override,
+        debe_col_override=debe_col_override,
+        haber_col_override=haber_col_override,
+    )
     sha = file_sha256(path)
 
     required = ["fecha", "cuenta_contable", "debe_ml", "haber_ml"]
@@ -224,7 +427,7 @@ def normalize_libro(path: Path, empresa: str, oficina: str) -> tuple[pd.DataFram
         if col not in df.columns:
             df[col] = ""
 
-    fecha_series = pd.to_datetime(get_col(df, "fecha"), errors="coerce")
+    fecha_series = pd.to_datetime(get_col(df, "fecha"), errors="coerce", dayfirst=True)
     cuenta_contable_series = get_col(df, "cuenta_contable")
     cuenta_nombre_series = get_col(df, "cuenta_nombre")
     debe_series = get_col(df, "debe_ml", 0)
@@ -235,27 +438,31 @@ def normalize_libro(path: Path, empresa: str, oficina: str) -> tuple[pd.DataFram
     out["oficina"] = oficina
     out["fecha"] = fecha_series.dt.date
     out["periodo"] = fecha_series.dt.strftime("%Y-%m")
+
     out["tipo_comprobante"] = get_col(df, "tipo_comprobante").fillna("").astype(str).str.strip()
     out["numero_comprobante"] = get_col(df, "numero_comprobante").fillna("").astype(str).str.strip()
     out["secuencia"] = get_col(df, "secuencia").fillna("").astype(str).str.strip()
     out["glosa"] = get_col(df, "glosa").fillna("").astype(str).str.strip()
+
     out["cuenta_contable"] = cuenta_contable_series.fillna("").astype(str).str.strip()
     out["cuenta_codigo"] = cuenta_contable_series.apply(extract_account_code)
     out["cuenta_nombre"] = [
-        extract_account_name(c, n) for c, n in zip(cuenta_contable_series, cuenta_nombre_series)
+        extract_account_name(c, n)
+        for c, n in zip(cuenta_contable_series, cuenta_nombre_series)
     ]
+
     out["debe_ml"] = debe_series.apply(normalize_number)
     out["haber_ml"] = haber_series.apply(normalize_number)
     out["saldo_ml"] = out["haber_ml"] - out["debe_ml"]
-    out["cuenta_eerr"] = out["cuenta_codigo"].str[0].isin(["4", "5", "6"]).map(
-        {True: "EERR", False: "BALANCE"}
-    )
+
+    out["cuenta_eerr"] = out["cuenta_codigo"].str[0].isin(["4", "5", "6"]).map({True: "EERR", False: "BALANCE"})
     out["line_number"] = range(1, len(out) + 1)
     out["file_sha256"] = sha
 
     out = out.dropna(subset=["fecha"])
     out = out[out["cuenta_codigo"] != ""]
     out = out[(out["debe_ml"] != 0) | (out["haber_ml"] != 0)].copy()
+
     return out, has_header, sha
 
 
@@ -289,16 +496,36 @@ def print_summary(df: pd.DataFrame, path: Path, empresa: str, oficina: str, has_
     print("\nResumen mensual")
     print(monthly.to_string(index=False))
 
+    by_prefix = (
+        df.groupby(df["cuenta_codigo"].str[0], as_index=True)
+        .agg(
+            filas=("cuenta_codigo", "size"),
+            debe_ml=("debe_ml", "sum"),
+            haber_ml=("haber_ml", "sum"),
+            saldo_ml=("saldo_ml", "sum"),
+        )
+        .reset_index()
+        .rename(columns={"cuenta_codigo": "clase_cuenta"})
+        .sort_values("clase_cuenta")
+    )
+    print("\nResumen por clase de cuenta")
+    print(by_prefix.to_string(index=False))
+
     eerr = (
         df[df["cuenta_eerr"] == "EERR"]
         .groupby(["cuenta_codigo", "cuenta_nombre"], as_index=False)
-        .agg(saldo_ml=("saldo_ml", "sum"), debe_ml=("debe_ml", "sum"), haber_ml=("haber_ml", "sum"))
+        .agg(
+            saldo_ml=("saldo_ml", "sum"),
+            debe_ml=("debe_ml", "sum"),
+            haber_ml=("haber_ml", "sum"),
+        )
     )
+
     if not eerr.empty:
         eerr["abs_saldo"] = eerr["saldo_ml"].abs()
-        eerr = eerr.sort_values("abs_saldo", ascending=False).head(10)
+        eerr = eerr.sort_values("abs_saldo", ascending=False).head(20)
         eerr["cuenta_contable"] = eerr["cuenta_codigo"] + " - " + eerr["cuenta_nombre"]
-        print("\nTop 10 cuentas EERR por monto absoluto")
+        print("\nTop cuentas EERR por monto absoluto")
         print(eerr[["cuenta_contable", "saldo_ml", "debe_ml", "haber_ml"]].to_string(index=False))
 
 
@@ -315,61 +542,62 @@ def ensure_schema_and_tables(conn: psycopg.Connection, schema: str) -> None:
         cur.execute(f"create schema if not exists {schema};")
 
         cur.execute(f"""
-            create table if not exists {schema}.empresas (
-                id bigserial primary key,
-                nombre text not null unique,
-                activa boolean not null default true,
-                created_at timestamptz not null default now()
-            );
+        create table if not exists {schema}.empresas (
+            id bigserial primary key,
+            nombre text not null unique,
+            activa boolean not null default true,
+            created_at timestamptz not null default now()
+        );
         """)
 
         cur.execute(f"""
-            create table if not exists {schema}.cargas_libro_diario (
-                id bigserial primary key,
-                empresa text not null,
-                oficina text not null,
-                archivo_nombre text not null,
-                file_sha256 text not null,
-                filas integer not null,
-                fecha_min date,
-                fecha_max date,
-                debe_ml numeric(18,2) not null default 0,
-                haber_ml numeric(18,2) not null default 0,
-                saldo_ml numeric(18,2) not null default 0,
-                metadata jsonb,
-                created_at timestamptz not null default now()
-            );
+        create table if not exists {schema}.cargas_libro_diario (
+            id bigserial primary key,
+            empresa text not null,
+            oficina text not null,
+            archivo_nombre text not null,
+            file_sha256 text not null,
+            filas integer not null,
+            fecha_min date,
+            fecha_max date,
+            debe_ml numeric(18,2) not null default 0,
+            haber_ml numeric(18,2) not null default 0,
+            saldo_ml numeric(18,2) not null default 0,
+            metadata jsonb,
+            created_at timestamptz not null default now()
+        );
         """)
 
         cur.execute(f"""
-            create table if not exists {schema}.fact_libro_diario (
-                id bigserial primary key,
-                carga_id bigint references {schema}.cargas_libro_diario(id) on delete cascade,
-                empresa text not null,
-                oficina text not null,
-                periodo text not null,
-                fecha date not null,
-                tipo_comprobante text,
-                numero_comprobante text,
-                secuencia text,
-                glosa text,
-                cuenta_codigo text not null,
-                cuenta_nombre text,
-                cuenta_contable text,
-                debe_ml numeric(18,2) not null default 0,
-                haber_ml numeric(18,2) not null default 0,
-                saldo_ml numeric(18,2) not null default 0,
-                cuenta_eerr text not null,
-                line_number integer,
-                file_sha256 text,
-                created_at timestamptz not null default now()
-            );
+        create table if not exists {schema}.fact_libro_diario (
+            id bigserial primary key,
+            carga_id bigint references {schema}.cargas_libro_diario(id) on delete cascade,
+            empresa text not null,
+            oficina text not null,
+            periodo text not null,
+            fecha date not null,
+            tipo_comprobante text,
+            numero_comprobante text,
+            secuencia text,
+            glosa text,
+            cuenta_codigo text not null,
+            cuenta_nombre text,
+            cuenta_contable text,
+            debe_ml numeric(18,2) not null default 0,
+            haber_ml numeric(18,2) not null default 0,
+            saldo_ml numeric(18,2) not null default 0,
+            cuenta_eerr text not null,
+            line_number integer,
+            file_sha256 text,
+            created_at timestamptz not null default now()
+        );
         """)
 
         cur.execute(f"alter table {schema}.cargas_libro_diario add column if not exists oficina text;")
         cur.execute(f"alter table {schema}.fact_libro_diario add column if not exists oficina text;")
         cur.execute(f"alter table {schema}.fact_libro_diario add column if not exists saldo_ml numeric(18,2) not null default 0;")
         cur.execute(f"alter table {schema}.cargas_libro_diario add column if not exists saldo_ml numeric(18,2) not null default 0;")
+
         cur.execute(f"update {schema}.cargas_libro_diario set oficina = empresa where oficina is null;")
         cur.execute(f"update {schema}.fact_libro_diario set oficina = empresa where oficina is null;")
         cur.execute(f"update {schema}.fact_libro_diario set saldo_ml = coalesce(haber_ml,0) - coalesce(debe_ml,0) where saldo_ml is null;")
@@ -381,38 +609,38 @@ def ensure_schema_and_tables(conn: psycopg.Connection, schema: str) -> None:
         cur.execute(f"create index if not exists idx_fact_libro_carga on {schema}.fact_libro_diario (carga_id);")
 
         cur.execute(f"""
-            create or replace view {schema}.v_resumen_cargas as
-            select
-                id as carga_id,
-                empresa,
-                oficina,
-                archivo_nombre,
-                file_sha256,
-                filas,
-                fecha_min,
-                fecha_max,
-                debe_ml,
-                haber_ml,
-                saldo_ml,
-                created_at
-            from {schema}.cargas_libro_diario;
+        create or replace view {schema}.v_resumen_cargas as
+        select
+            id as carga_id,
+            empresa,
+            oficina,
+            archivo_nombre,
+            file_sha256,
+            filas,
+            fecha_min,
+            fecha_max,
+            debe_ml,
+            haber_ml,
+            saldo_ml,
+            created_at
+        from {schema}.cargas_libro_diario;
         """)
 
         cur.execute(f"""
-            create or replace view {schema}.v_eerr_mensual_cuenta as
-            select
-                empresa,
-                oficina,
-                periodo,
-                cuenta_codigo,
-                cuenta_nombre,
-                sum(debe_ml) as debe_ml,
-                sum(haber_ml) as haber_ml,
-                sum(saldo_ml) as saldo_ml,
-                count(*) as movimientos
-            from {schema}.fact_libro_diario
-            where cuenta_eerr = 'EERR'
-            group by empresa, oficina, periodo, cuenta_codigo, cuenta_nombre;
+        create or replace view {schema}.v_eerr_mensual_cuenta as
+        select
+            empresa,
+            oficina,
+            periodo,
+            cuenta_codigo,
+            cuenta_nombre,
+            sum(debe_ml) as debe_ml,
+            sum(haber_ml) as haber_ml,
+            sum(saldo_ml) as saldo_ml,
+            count(*) as movimientos
+        from {schema}.fact_libro_diario
+        where cuenta_eerr = 'EERR'
+        group by empresa, oficina, periodo, cuenta_codigo, cuenta_nombre;
         """)
 
         for emp in EMPRESAS:
@@ -422,7 +650,14 @@ def ensure_schema_and_tables(conn: psycopg.Connection, schema: str) -> None:
             )
 
 
-def insert_libro(conn: psycopg.Connection, df: pd.DataFrame, schema: str, path: Path, sha: str, replace: bool) -> int:
+def insert_libro(
+    conn: psycopg.Connection,
+    df: pd.DataFrame,
+    schema: str,
+    path: Path,
+    sha: str,
+    replace: bool,
+) -> int:
     schema = sanitize_schema(schema)
     empresa = str(df["empresa"].iloc[0])
     oficina = str(df["oficina"].iloc[0])
@@ -454,6 +689,7 @@ def insert_libro(conn: psycopg.Connection, df: pd.DataFrame, schema: str, path: 
             float(df["saldo_ml"].sum()),
             Jsonb({"source": "load_libro_diario.py"}),
         ))
+
         carga_id = int(cur.fetchone()["id"])
 
         rows = []
@@ -504,6 +740,10 @@ def main() -> int:
     parser.add_argument("--replace", action="store_true", help="Reemplaza cargas con misma oficina+hash")
     parser.add_argument("--reset-schema", action="store_true", help="DANGER: borra completamente el schema antes de cargar")
     parser.add_argument("--export-csv")
+    parser.add_argument("--cuenta-col", type=int, help="Override 1-based para columna cuenta contable en archivos sin headers")
+    parser.add_argument("--debe-col", type=int, help="Override 1-based para columna debe en archivos sin headers")
+    parser.add_argument("--haber-col", type=int, help="Override 1-based para columna haber en archivos sin headers")
+
     args = parser.parse_args()
 
     path = Path(args.archivo)
@@ -514,7 +754,15 @@ def main() -> int:
     empresa = args.empresa or choose_empresa()
     oficina = args.oficina or empresa
 
-    df, has_header, sha = normalize_libro(path, empresa, oficina)
+    df, has_header, sha = normalize_libro(
+        path,
+        empresa,
+        oficina,
+        cuenta_col_override=args.cuenta_col,
+        debe_col_override=args.debe_col,
+        haber_col_override=args.haber_col,
+    )
+
     print_summary(df, path, empresa, oficina, has_header, sha)
 
     if args.export_csv:
@@ -535,6 +783,7 @@ def main() -> int:
         if args.reset_schema:
             print(f"\nATENCIÓN: borrando schema completo: {schema}")
             reset_schema(conn, schema)
+
         ensure_schema_and_tables(conn, schema)
         carga_id = insert_libro(conn, df, schema, path, sha, args.replace)
         conn.commit()
