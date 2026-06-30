@@ -1,0 +1,14 @@
+{
+  "scripts": {
+    "sources": "evidence sources",
+    "dev": "evidence dev",
+    "build": "evidence build",
+    "build:strict": "evidence build --strict"
+  },
+  "dependencies": {
+    "@evidence-dev/core-components": "latest",
+    "@evidence-dev/evidence": "latest",
+    "@evidence-dev/postgres": "latest"
+  },
+  "devDependencies": {}
+}

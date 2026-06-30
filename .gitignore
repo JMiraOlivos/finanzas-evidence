@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node / Evidence
+node_modules/
+build/
+.evidence/
+.evidence-ssr/
+*.parquet
+
+# Secrets
+.env
+.env.*
+connection.options.yaml
+**/connection.options.yaml
+
+# Raw financial files - do not commit
+*.xls
+*.xlsx
+*.xlsm
+*.csv
+
+# OS
+.DS_Store
+Thumbs.db
