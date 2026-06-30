@@ -1,30 +1,13 @@
 ---
 title: EERR Finanzas
+queries:
+  - cargas: cargas.sql
+  - pnl_resumen_kpis: pnl/pnl_resumen_kpis.sql
+  - resultado_mensual: pnl/resultado_mensual.sql
+  - pnl_nivel1: pnl/pnl_nivel1.sql
+  - pnl_estructurado: pnl/pnl_estructurado.sql
+  - cuentas_revision: pnl/cuentas_revision.sql
 ---
-
-```sql cargas
-select * from {{queries/cargas.sql}}
-```
-
-```sql pnl_resumen_kpis
-select * from {{queries/pnl/pnl_resumen_kpis.sql}}
-```
-
-```sql resultado_mensual
-select * from {{queries/pnl/resultado_mensual.sql}}
-```
-
-```sql pnl_nivel1
-select * from {{queries/pnl/pnl_nivel1.sql}}
-```
-
-```sql pnl_estructurado
-select * from {{queries/pnl/pnl_estructurado.sql}}
-```
-
-```sql cuentas_revision
-select * from {{queries/pnl/cuentas_revision.sql}}
-```
 
 # EERR Finanzas
 
