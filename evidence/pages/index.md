@@ -61,15 +61,14 @@ base as (
     from movimientos_pnl m
     left join matches mt on mt.id = m.id and mt.rn = 1
 )
-select empresa, periodo,
+select empresa,
     sum(case when nivel1 = 'Ingresos' then saldo_ml else 0 end) as ingresos_ml,
     sum(case when nivel1 <> 'Ingresos' then saldo_ml else 0 end) as gastos_ml,
     sum(saldo_ml) as resultado_ml,
     count(distinct case when is_fallback = true or nivel1 in ('SIN MAPEO','P&L sin clasificar') then cuenta_codigo end) as cuentas_revision
 from base
-where periodo = (select max(periodo) from base)
-group by empresa, periodo
-order by empresa, periodo
+group by empresa
+order by empresa
 ```
 
 ```sql resultado_mensual
@@ -275,11 +274,17 @@ calculados as (
         false as requiere_revision
     from totales_seccion
     group by empresa
+),
+pnl_final as (
+    select * from detalle
+    union all
+    select * from calculados
 )
-select * from detalle
-union all
-select * from calculados
-order by empresa, pnl_sort, nivel2, nivel3
+select
+    *,
+    abs(monto_ml) as sort_abs
+from pnl_final
+order by empresa, pnl_sort, sort_abs desc, nivel2, nivel3
 ```
 
 ```sql cuentas_revision
@@ -335,7 +340,7 @@ order by abs(sum(saldo_ml)) desc
 
 ## Resumen ejecutivo
 
-Indicadores principales del ultimo periodo disponible.
+Indicadores acumulados para todos los periodos disponibles.
 
 {% big_value
     data="pnl_resumen_kpis"
@@ -438,12 +443,12 @@ Estado de resultados con niveles financieros, subtotales y alertas discretas par
     row_conditional_colors="case when max(calc_type) = 2 or max(requiere_revision) then '#F8F5F0' else null end"
 %}
     {% dimension value="pnl_sort" title="Sort" sort="asc" hide=true /%}
+    {% dimension value="sort_abs" title="Sort Abs" sort="desc" hide=true /%}
     {% dimension value="calc_type" title="Calc Type" hide=true /%}
     {% dimension value="pnl_section" title="PNL Section" /%}
     {% dimension value="nivel2" title="Nivel 2" /%}
     {% dimension value="nivel3" title="Nivel 3" /%}
-    {% dimension value="empresa" title="Empresa" /%}
-    {% measure value="sum(movimientos)" title="Movimientos" fmt="num0" align="right" /%}
+    {% pivot value="empresa" title="Empresa" /%}
     {% measure value="sum(monto_ml)" title="Monto" fmt="usd0" red_negatives=true align="right" /%}
 {% /table %}
 
