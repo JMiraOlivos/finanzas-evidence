@@ -1,5 +1,5 @@
 plugins:
   components:
-    @evidence-dev/core-components: {}
+    "@evidence-dev/core-components": {}
   datasources:
-    @evidence-dev/postgres: {}
+    "@evidence-dev/postgres": {}
