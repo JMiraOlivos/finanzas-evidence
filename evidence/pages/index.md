@@ -176,21 +176,110 @@ base as (
         m.saldo_ml
     from movimientos_pnl m
     left join matches mt on mt.id = m.id and mt.rn = 1
+),
+layout as (
+    select 1 as pnl_sort, 'Ingresos' as pnl_section, 1 as calc_type, 1 as detail, '' as indexsect, 'Ingresos' as pnl_layout
+    union all select 2, 'Gastos Variables', 1, 1, '', 'Gastos Variables'
+    union all select 3, 'RRHH', 1, 1, '', 'RRHH'
+    union all select 4, 'Marketing', 1, 1, '', 'Marketing'
+    union all select 5, 'Gastos Administración', 1, 1, '', 'Gastos Administración'
+    union all select 6, 'Asesorías', 1, 1, '', 'Asesorías'
+    union all select 7, 'Gastos Oficina/Ocupación', 1, 1, '', 'Gastos Oficina/Ocupación'
+    union all select 8, 'Tecnología', 1, 1, '', 'Tecnología'
+    union all select 9, 'No Operacionales', 1, 1, '', 'No Operacionales'
+    union all select 12, 'Intereses, Impuestos, Depr. Y Amort', 1, 1, '', 'Intereses, Impuestos, Depr. Y Amort'
+    union all select 15, 'Impuesto', 1, 1, '', 'Impuesto'
+),
+detalle as (
+    select
+        b.empresa,
+        l.pnl_sort,
+        l.pnl_section,
+        l.calc_type,
+        l.detail,
+        l.indexsect,
+        l.pnl_layout,
+        b.nivel2,
+        b.nivel3,
+        sum(b.saldo_ml) as monto_ml,
+        count(*) as movimientos,
+        max(b.is_fallback) as contiene_fallback,
+        case
+            when max(b.is_fallback) = true
+              or b.nivel1 in ('P&L sin clasificar', 'SIN MAPEO')
+              or b.nivel2 in ('P&L sin clasificar', 'SIN MAPEO')
+              or b.nivel3 in ('P&L sin clasificar', 'SIN MAPEO')
+            then true else false
+        end as requiere_revision
+    from base b
+    inner join layout l on b.nivel1 = l.pnl_layout
+    group by b.empresa, l.pnl_sort, l.pnl_section, l.calc_type, l.detail, l.indexsect, l.pnl_layout, b.nivel2, b.nivel3, b.nivel1
+),
+totales_seccion as (
+    select
+        empresa,
+        pnl_sort,
+        sum(monto_ml) as monto_ml,
+        sum(movimientos) as movimientos
+    from detalle
+    group by empresa, pnl_sort
+),
+calculados as (
+    select
+        empresa,
+        11 as pnl_sort,
+        'EBITDA' as pnl_section,
+        2 as calc_type,
+        0 as detail,
+        '' as indexsect,
+        'EBITDA' as pnl_layout,
+        '' as nivel2,
+        '' as nivel3,
+        sum(case when pnl_sort between 1 and 9 then monto_ml else 0 end) as monto_ml,
+        sum(case when pnl_sort between 1 and 9 then movimientos else 0 end) as movimientos,
+        false as contiene_fallback,
+        false as requiere_revision
+    from totales_seccion
+    group by empresa
+    union all
+    select
+        empresa,
+        14 as pnl_sort,
+        'Resultado Antes Imp.' as pnl_section,
+        2 as calc_type,
+        0 as detail,
+        '' as indexsect,
+        'Resultado Antes Imp.' as pnl_layout,
+        '' as nivel2,
+        '' as nivel3,
+        sum(case when pnl_sort between 1 and 9 or pnl_sort = 12 then monto_ml else 0 end) as monto_ml,
+        sum(case when pnl_sort between 1 and 9 or pnl_sort = 12 then movimientos else 0 end) as movimientos,
+        false as contiene_fallback,
+        false as requiere_revision
+    from totales_seccion
+    group by empresa
+    union all
+    select
+        empresa,
+        17 as pnl_sort,
+        'Resultado Final' as pnl_section,
+        2 as calc_type,
+        0 as detail,
+        '' as indexsect,
+        'Resultado Final' as pnl_layout,
+        '' as nivel2,
+        '' as nivel3,
+        sum(case when pnl_sort between 1 and 9 or pnl_sort in (12, 15) then monto_ml else 0 end) as monto_ml,
+        sum(case when pnl_sort between 1 and 9 or pnl_sort in (12, 15) then movimientos else 0 end) as movimientos,
+        false as contiene_fallback,
+        false as requiere_revision
+    from totales_seccion
+    group by empresa
 )
-select empresa, periodo, orden, nivel1, nivel2, nivel3,
-    sum(saldo_ml) as monto_ml,
-    count(*) as movimientos,
-    max(is_fallback) as contiene_fallback,
-    case
-        when max(is_fallback) = true
-          or nivel1 in ('P&L sin clasificar', 'SIN MAPEO')
-          or nivel2 in ('P&L sin clasificar', 'SIN MAPEO')
-          or nivel3 in ('P&L sin clasificar', 'SIN MAPEO')
-        then true else false
-    end as requiere_revision
-from base
-group by empresa, periodo, orden, nivel1, nivel2, nivel3
-order by empresa, periodo, orden, nivel1, nivel2, nivel3
+select * from detalle
+union all
+select * from calculados
+order by empresa, pnl_sort, nivel2, nivel3
 ```
 
 ```sql cuentas_revision
@@ -344,17 +433,16 @@ Estado de resultados con niveles financieros, subtotales y alertas discretas par
     row_lines=true
     row_shading=false
     repeat_values=false
-    subtotals=true
-    collapsible=true
-    collapsed=false
+    subtotals=false
     total_label="Resultado"
-    row_conditional_colors="case when requiere_revision then '#F8F5F0' else null end"
+    row_conditional_colors="case when max(calc_type) = 2 or max(requiere_revision) then '#F8F5F0' else null end"
 %}
-    {% dimension value="nivel1" title="Nivel 1" /%}
+    {% dimension value="pnl_sort" title="Sort" sort="asc" hide=true /%}
+    {% dimension value="calc_type" title="Calc Type" hide=true /%}
+    {% dimension value="pnl_section" title="PNL Section" /%}
     {% dimension value="nivel2" title="Nivel 2" /%}
     {% dimension value="nivel3" title="Nivel 3" /%}
     {% dimension value="empresa" title="Empresa" /%}
-    {% dimension value="periodo" title="Periodo" /%}
     {% measure value="sum(movimientos)" title="Movimientos" fmt="num0" align="right" /%}
     {% measure value="sum(monto_ml)" title="Monto" fmt="usd0" red_negatives=true align="right" /%}
 {% /table %}
